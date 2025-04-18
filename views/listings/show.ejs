@@ -1,0 +1,2203 @@
+<%- layout("/layouts/boilerplate") %>
+
+<% if (currUser) { %>
+    <input type="hidden" id="user-logged-in" value="true">
+<% } %>
+
+<script type="text/javascript">
+    document.addEventListener('DOMContentLoaded', function() {
+        // Initialize map
+        const mapContainer = document.getElementById('map');
+        if (!mapContainer) {
+            console.error('Map container not found');
+            return;
+        }
+
+        try {
+            const coordinates = JSON.parse('<%- JSON.stringify(listing.geometry.coordinates) %>');
+            const mapToken = "<%= process.env.MAP_TOKEN %>";
+            
+            if (!mapToken) {
+                throw new Error('Mapbox access token is missing');
+            }
+
+            if (!coordinates || !Array.isArray(coordinates) || coordinates.length !== 2) {
+                throw new Error('Invalid coordinates');
+            }
+
+            mapboxgl.accessToken = mapToken;
+            
+            const map = new mapboxgl.Map({
+                container: 'map',
+                style: 'mapbox://styles/mapbox/streets-v12',
+                center: coordinates,
+                zoom: 12,
+                attributionControl: false,
+                interactive: true
+            });
+
+            // Wait for map to load
+            map.on('load', () => {
+                console.log('Map loaded successfully');
+                // Add navigation controls
+                map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
+                // Add marker
+                new mapboxgl.Marker({
+                    color: '#FF385C',
+                    scale: 1.2
+                })
+                .setLngLat(coordinates)
+                .addTo(map);
+
+                // Force a resize to ensure the map renders properly
+                map.resize();
+            });
+
+            // Handle any errors
+            map.on('error', (e) => {
+                console.error('Map error:', e);
+                showFlashMessage('Error loading map. Please try refreshing the page.', 'warning');
+            });
+        } catch (error) {
+            console.error('Error initializing map:', error);
+            showFlashMessage('Error initializing map: ' + error.message, 'warning');
+            if (mapContainer) {
+                mapContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Unable to load map</div>';
+            }
+        }
+
+        // Get DOM elements
+        const bookingForm = document.getElementById('booking-form');
+        const payNowBtn = document.getElementById('pay-now');
+        const startDateInput = document.getElementById('checkIn');
+        const endDateInput = document.getElementById('checkOut');
+        const guestsInput = document.getElementById('guests');
+        const basePrice = Number('<%= listing.price %>');
+        const bookedDates = JSON.parse('<%- JSON.stringify(listing.bookedDates) %>');
+
+        // Function to check if a date is available
+        function isDateAvailable(date) {
+            const checkDate = new Date(date);
+            return !bookedDates.some(booking => {
+                const checkIn = new Date(booking.checkIn);
+                const checkOut = new Date(booking.checkOut);
+                return checkDate >= checkIn && checkDate <= checkOut;
+            });
+        }
+
+        function calculateTotalPrice(nights) {
+            const total = basePrice * nights;
+            
+            // Update the displayed price details
+            document.getElementById('total-amount').textContent = `₹${total.toLocaleString('en-IN')}`;
+            document.querySelector('.price-details').style.display = 'block';
+            
+            return total;
+        }
+
+        function calculateNights(checkIn, checkOut) {
+            const start = new Date(checkIn);
+            const end = new Date(checkOut);
+            const diffTime = Math.abs(end - start);
+            return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        }
+
+        async function initializePayment() {
+            const checkIn = startDateInput.value;
+            const checkOut = endDateInput.value;
+            const guests = Number(guestsInput.value);
+            const nights = calculateNights(checkIn, checkOut);
+            const totalPrice = calculateTotalPrice(nights);
+
+            // Generate unique booking ID
+            const timestamp = Date.now();
+            const randomString = Math.random().toString(36).substring(2, 8);
+            const bookingId = `DART-${timestamp}-${randomString}`;
+
+            try {
+                // Create Razorpay order first
+                const response = await fetch('/payment/create_order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': '<%= csrfToken %>'
+                    },
+                    body: JSON.stringify({
+                        listingId: '<%= listing._id %>',
+                        checkIn: checkIn,
+                        checkOut: checkOut,
+                        guests: guests,
+                        totalPrice: totalPrice
+                    })
+                });
+
+                const orderData = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(orderData.error || 'Failed to create order');
+                }
+
+                const options = {
+                    key: '<%= process.env.RAZORPAY_KEY_ID %>',
+                    amount: orderData.amount,
+                    currency: 'INR',
+                    name: '<%= listing.title %>',
+                    description: `Booking for ${nights} nights`,
+                    image: '<%= listing.images[0].url %>',
+                    order_id: orderData.id,
+                    handler: function(response) {
+                        console.log('Razorpay response:', response);
+                        
+                        if (!response.razorpay_payment_id || !response.razorpay_order_id || !response.razorpay_signature) {
+                            showFlashMessage('Payment verification failed. Please try again.', 'error');
+                            payNowBtn.disabled = false;
+                            payNowBtn.textContent = 'Book Now';
+                            return;
+                        }
+
+                        // Create URL parameters
+                        const params = new URLSearchParams({
+                            listingId: '<%= listing._id %>',
+                            checkIn: checkIn,
+                            checkOut: checkOut,
+                            guests: guests,
+                            paymentId: response.razorpay_payment_id,
+                            orderId: orderData.id, // Use the order ID from the order creation response
+                            signature: response.razorpay_signature,
+                            amount: totalPrice,
+                            paymentMode: 'razorpay',
+                            author: '<%= currUser._id %>',
+                            bookingId: bookingId,
+                            email: '<%= currUser ? currUser.email : "" %>',
+                            name: '<%= currUser ? currUser.username : "" %>',
+                            status: 'confirmed'
+                        });
+
+                        // Log the parameters for debugging
+                        console.log('Payment success URL parameters:', {
+                            listingId: '<%= listing._id %>',
+                            checkIn: checkIn,
+                            checkOut: checkOut,
+                            guests: guests,
+                            paymentId: response.razorpay_payment_id,
+                            orderId: orderData.id, // Use the order ID from the order creation response
+                            signature: response.razorpay_signature,
+                            amount: totalPrice,
+                            paymentMode: 'razorpay',
+                            author: '<%= currUser._id %>',
+                            bookingId: bookingId,
+                            email: '<%= currUser ? currUser.email : "" %>',
+                            name: '<%= currUser ? currUser.username : "" %>',
+                            status: 'confirmed'
+                        });
+
+                        window.location.href = `/payment/paymentSuccess?${params.toString()}`;
+                    },
+                    prefill: {
+                        name: '<%= currUser ? currUser.username : "" %>',
+                        email: '<%= currUser ? currUser.email : "" %>'
+                    },
+                    theme: {
+                        color: '#F37254'
+                    },
+                    modal: {
+                        ondismiss: function() {
+                            payNowBtn.disabled = false;
+                            payNowBtn.textContent = 'Book Now';
+                        }
+                    }
+                };
+
+                const rzp = new Razorpay(options);
+                rzp.open();
+            } catch (error) {
+                console.error('Payment initialization error:', error);
+                showFlashMessage(error.message || 'Failed to initialize payment', 'error');
+                payNowBtn.disabled = false;
+                payNowBtn.textContent = 'Book Now';
+            }
+        }
+
+        bookingForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            if (!startDateInput.value || !endDateInput.value || !guestsInput.value) {
+                flash('error', 'Please fill in all booking details');
+                return;
+            }
+            payNowBtn.disabled = true;
+            payNowBtn.textContent = 'Processing...';
+            initializePayment();
+        });
+
+        // Setup date inputs
+        if (startDateInput && endDateInput) {
+            const today = new Date().toISOString().split('T')[0];
+            startDateInput.setAttribute('min', today);
+            
+            startDateInput.addEventListener('change', function() {
+                const selectedDate = new Date(this.value);
+                endDateInput.setAttribute('min', this.value);
+                
+                if (!isDateAvailable(this.value)) {
+                    showFlashMessage('Selected check-in date is not available', 'warning');
+                    this.value = '';
+                    return;
+                }
+                
+                const maxDate = new Date(selectedDate);
+                maxDate.setDate(maxDate.getDate() + 14);
+                endDateInput.setAttribute('max', maxDate.toISOString().split('T')[0]);
+                
+                if (endDateInput.value && !isDateAvailable(endDateInput.value)) {
+                    endDateInput.value = '';
+                    showFlashMessage('Please select a different check-out date', 'warning');
+                }
+                
+                calculateTotalPrice(calculateNights(this.value, endDateInput.value));
+            });
+            
+            endDateInput.addEventListener('change', function() {
+                if (!isDateAvailable(this.value)) {
+                    showFlashMessage('Selected check-out date is not available', 'warning');
+                    this.value = '';
+                    return;
+                }
+                
+                const startDate = new Date(startDateInput.value);
+                const endDate = new Date(this.value);
+                let allDatesAvailable = true;
+                
+                for (let date = new Date(startDate); date <= endDate; date.setDate(date.getDate() + 1)) {
+                    if (!isDateAvailable(date.toISOString().split('T')[0])) {
+                        allDatesAvailable = false;
+                        break;
+                    }
+                }
+                
+                if (!allDatesAvailable) {
+                    showFlashMessage('Some dates in your selected range are not available', 'warning');
+                    this.value = '';
+                    return;
+                }
+                
+                calculateTotalPrice(calculateNights(startDateInput.value, this.value));
+            });
+        }
+
+        // Add event listeners for price calculation
+        startDateInput?.addEventListener('change', function() {
+            if (startDateInput.value && endDateInput.value) {
+                const nights = calculateNights(startDateInput.value, endDateInput.value);
+                calculateTotalPrice(nights);
+            }
+        });
+
+        endDateInput?.addEventListener('change', function() {
+            if (startDateInput.value && endDateInput.value) {
+                const nights = calculateNights(startDateInput.value, endDateInput.value);
+                calculateTotalPrice(nights);
+            }
+        });
+
+        guestsInput?.addEventListener('change', function() {
+            if (startDateInput.value && endDateInput.value) {
+                const nights = calculateNights(startDateInput.value, endDateInput.value);
+                calculateTotalPrice(nights);
+            }
+        });
+
+        // Handle like button clicks
+        document.querySelectorAll('.like-btn').forEach(btn => {
+            btn.addEventListener('click', async function(e) {
+                e.preventDefault();
+                const listingId = this.dataset.listingId;
+                
+                try {
+                    const response = await fetch(`/listings/${listingId}/like`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRF-Token': '<%= csrfToken %>'
+                        },
+                        credentials: 'include'
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        if (data.redirect) {
+                            window.location.href = data.redirect;
+                            return;
+                        }
+                        throw new Error(data.message || 'Failed to toggle like');
+                    }
+
+                    // Update button state
+                    const icon = this.querySelector('i');
+                    if (data.liked) {
+                        icon.classList.remove('far');
+                        icon.classList.add('fas');
+                        this.classList.add('liked');
+                    } else {
+                        icon.classList.remove('fas');
+                        icon.classList.add('far');
+                        this.classList.remove('liked');
+                    }
+
+                    showFlashMessage(data.message, 'success');
+
+                } catch (error) {
+                    console.error('Error:', error);
+                    showFlashMessage(error.message, 'warning');
+                }
+            });
+        });
+
+        // Handle delete buttons
+        const deleteListingBtn = document.querySelector('.delete-listing-btn');
+        if (deleteListingBtn) {
+            deleteListingBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (confirm('Are you sure you want to delete this listing? This action cannot be undone.')) {
+                    this.closest('form').submit();
+                }
+            });
+        }
+
+        const deleteReviewBtns = document.querySelectorAll('.delete-review-btn');
+        deleteReviewBtns.forEach(btn => {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (confirm('Are you sure you want to delete your review?')) {
+                    this.closest('form').submit();
+                }
+            });
+        });
+
+        // Handle image gallery
+        document.querySelectorAll('.sub-image').forEach(img => {
+            img.addEventListener('click', function() {
+                const mainImage = document.querySelector('.main-image img');
+                const clickedImage = this.querySelector('img');
+                const temp = mainImage.src;
+                mainImage.src = clickedImage.src;
+                clickedImage.src = temp;
+            });
+        });
+    });
+</script>
+
+<style>
+    .listing-container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 1rem;
+        font-family: 'Roboto', 'Lato', 'Montserrat', sans-serif;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .listing-header {
+        margin-bottom: 1.5rem;
+        width: 100%;
+    }
+
+    .listing-title-container {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-bottom: 0.5rem;
+        width: 100%;
+    }
+
+    .listing-title {
+        font-size: clamp(1.5rem, 4vw, 1.75rem);
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+        line-height: 1.3;
+    }
+
+    .listing-actions {
+        display: flex;
+        gap: 0.8rem;
+        flex-wrap: wrap;
+    }
+
+    .edit-listing-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        background-color: #FF385C;
+        color: white;
+        padding: 0.6rem 1.2rem;
+        border-radius: 8px;
+        font-weight: 600;
+        text-decoration: none;
+        transition: all 0.3s ease;
+        font-size: clamp(0.8rem, 2vw, 1rem);
+        box-shadow: 0 2px 5px rgba(255, 56, 92, 0.2);
+    }
+
+    .edit-listing-btn:hover {
+        background-color: #E31C5F;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(255, 56, 92, 0.3);
+        color: white;
+    }
+
+    .edit-listing-btn i {
+        font-size: clamp(0.8rem, 2vw, 1rem);
+    }
+
+    .delete-listing-form {
+        margin: 0;
+    }
+
+    .delete-listing-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        background-color: #f8f9fa;
+        color: #dc3545;
+        padding: 0.6rem 1.2rem;
+        border-radius: 8px;
+        font-weight: 600;
+        border: 1px solid #dc3545;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        font-size: clamp(0.8rem, 2vw, 1rem);
+    }
+
+    .delete-listing-btn:hover {
+        background-color: #dc3545;
+        color: white;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(220, 53, 69, 0.2);
+    }
+
+    .delete-listing-btn i {
+        font-size: clamp(0.8rem, 2vw, 1rem);
+    }
+
+    .listing-meta {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+        width: 100%;
+    }
+
+    .listing-rating {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .rating-stars {
+        color: #FF385C;
+    }
+
+    .rating-count {
+        color: #717171;
+        font-size: clamp(0.8rem, 2vw, 1rem);
+        background-color: #f8f9fa;
+        padding: 0.3rem 0.6rem;
+        border-radius: 20px;
+        border: 1px solid #e9ecef;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+    }
+    
+    .rating-count i {
+        color: #FF385C;
+    }
+
+    .listing-location {
+        color: #717171;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: clamp(0.8rem, 2vw, 1rem);
+    }
+
+    .listing-images {
+        display: block;
+        margin-bottom: 1.5rem;
+        border-radius: 8px;
+        overflow: hidden;
+        width: 100%;
+    }
+
+    .image-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 0.5rem;
+        border-radius: 20px;
+        overflow: hidden;
+    }
+
+    .main-image {
+        grid-column: span 2;
+        height: 600px;
+    }
+
+    .sub-image {
+        height: 300px;
+        position: relative;
+    }
+
+    .listing-images img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0,0,0,0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 1.5rem;
+        font-weight: bold;
+    }
+
+    .listing-content {
+        display: block;
+        margin-bottom: 2rem;
+        width: 100%;
+    }
+
+    .listing-details {
+        padding-right: 0;
+        max-width: 100%;
+        width: 100%;
+    }
+
+    .listing-description {
+        margin-bottom: 2rem;
+        line-height: 1.6;
+        width: 100%;
+    }
+
+    .listing-description h2 {
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+        font-weight: 700;
+        margin-bottom: 1rem;
+        font-size: clamp(1.2rem, 3vw, 1.5rem);
+    }
+
+    .amenities {
+        margin-bottom: 2rem;
+        width: 100%;
+    }
+
+    .amenities h3 {
+        font-size: clamp(1.2rem, 3vw, 1.5rem);
+        font-weight: 700;
+        margin-bottom: 1rem;
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+    }
+
+    .amenities-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: 0.8rem;
+        width: 100%;
+    }
+
+    .amenity-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: clamp(0.8rem, 2vw, 1rem);
+    }
+
+    .amenity-icon {
+        color: #FF385C;
+    }
+
+    .booking-card {
+        position: static;
+        width: 100%;
+        margin: 2rem 0;
+        background: white;
+        border-radius: 8px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        box-sizing: border-box;
+    }
+
+    .booking-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+        width: 100%;
+    }
+
+    .price {
+        font-size: clamp(1.2rem, 3vw, 1.5rem);
+        font-weight: 700;
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+    }
+
+    .price-night {
+        color: #717171;
+        font-size: clamp(0.7rem, 1.8vw, 0.9rem);
+    }
+
+    .booking-form {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        align-items: end;
+        width: 100%;
+    }
+
+    .form-group {
+        margin-bottom: 1rem;
+        width: 100%;
+        position: relative;
+    }
+
+    .form-label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+        font-family: 'Roboto', 'Lato', 'Montserrat', sans-serif;
+        font-size: clamp(0.8rem, 2vw, 1rem);
+        color: #484848;
+    }
+
+    .form-control {
+        width: 100%;
+        padding: 0.8rem;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        font-size: clamp(0.8rem, 2vw, 1rem);
+        font-family: 'Roboto', 'Lato', 'Montserrat', sans-serif;
+        box-sizing: border-box;
+        background-color: #f8f9fa;
+        transition: all 0.3s ease;
+        appearance: none;
+        -webkit-appearance: none;
+        -moz-appearance: none;
+    }
+
+    .form-control:focus {
+        outline: none;
+        border-color: #FF385C;
+        box-shadow: 0 0 0 2px rgba(255, 56, 92, 0.1);
+        background-color: white;
+    }
+
+    .form-control:hover {
+        border-color: #FF385C;
+        background-color: white;
+    }
+
+    /* Specific styles for number input */
+    input[type="number"].form-control {
+        padding-right: 1.5rem;
+    }
+
+    /* Custom arrow buttons for number input */
+    input[type="number"].form-control::-webkit-inner-spin-button,
+    input[type="number"].form-control::-webkit-outer-spin-button {
+        opacity: 1;
+        background: transparent;
+        border-left: 1px solid #ddd;
+        height: 2.5em;
+        position: absolute;
+        right: 1px;
+        top: 1px;
+        width: 1.5em;
+    }
+
+    /* Date input specific styles */
+    input[type="date"].form-control {
+        padding-right: 2.5rem;
+    }
+
+    .form-control::-webkit-calendar-picker-indicator {
+        color: #FF385C;
+        cursor: pointer;
+        opacity: 0.8;
+        transition: opacity 0.3s ease;
+        position: absolute;
+        right: 0.8rem;
+        top: 50%;
+        transform: translateY(-50%);
+    }
+
+    .form-control::-webkit-calendar-picker-indicator:hover {
+        opacity: 1;
+    }
+
+    .form-control::-webkit-datetime-edit {
+        color: #333;
+    }
+
+    .form-control::-webkit-datetime-edit-fields-wrapper {
+        background-color: transparent;
+    }
+
+    /* Placeholder styles */
+    .form-control::placeholder {
+        color: #adb5bd;
+    }
+
+    /* Disabled state */
+    .form-control:disabled {
+        background-color: #e9ecef;
+        cursor: not-allowed;
+    }
+
+    /* Focus visible outline for accessibility */
+    .form-control:focus-visible {
+        outline: 2px solid #FF385C;
+        outline-offset: 1px;
+    }
+
+    /* Mobile optimization */
+    @media (max-width: 768px) {
+        .form-control {
+            font-size: 16px; /* Prevent zoom on mobile */
+            padding: 0.7rem;
+        }
+    }
+
+    .book-button {
+        width: 100%;
+        padding: 0.9rem;
+        background-color: #FF385C;
+        color: white;
+        border: none;
+        border-radius: 10px;
+        font-size: clamp(0.9rem, 2.5vw, 1.1rem);
+        font-weight: 700;
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .book-button::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(120deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.2) 50%, rgba(255,255,255,0) 100%);
+        transform: translateX(-100%);
+        transition: transform 0.6s ease;
+    }
+
+    .book-button:hover {
+        background-color: #E31C5F;
+        transform: translateY(-2px);
+        box-shadow: 0 5px 12px rgba(255, 56, 92, 0.2);
+    }
+
+    .book-button:hover::before {
+        transform: translateX(100%);
+    }
+
+    .book-button:active {
+        transform: translateY(-1px);
+        box-shadow: 0 3px 6px rgba(255, 56, 92, 0.15);
+    }
+
+    .book-button:disabled {
+        background-color: #FFB6C1;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+    }
+
+    .book-button i {
+        font-size: clamp(0.9rem, 2.5vw, 1.1rem);
+    }
+
+    .book-button .spinner {
+        display: inline-block;
+        width: 18px;
+        height: 18px;
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-radius: 50%;
+        border-top-color: #fff;
+        animation: spin 1s ease-in-out infinite;
+        margin-right: 8px;
+    }
+
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+
+    .reviews-section {
+        margin-top: 3rem;
+        padding-top: 2rem;
+        border-top: 1px solid #ddd;
+        width: 100%;
+    }
+
+    .reviews-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+        flex-wrap: wrap;
+        gap: 1rem;
+        width: 100%;
+    }
+
+    .reviews-header h2 {
+        font-size: clamp(1.2rem, 3vw, 1.5rem);
+        font-weight: 700;
+        margin: 0;
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+    }
+
+    .reviews-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 1.5rem;
+        width: 100%;
+    }
+
+    .review-card {
+        background: white;
+        border-radius: 8px;
+        padding: 1.25rem;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .review-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+    }
+
+    .review-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        width: 100%;
+    }
+
+    .review-author {
+        font-weight: 700;
+        font-size: clamp(0.9rem, 2.5vw, 1.1rem);
+        color: #222;
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+    }
+
+    .review-date {
+        color: #717171;
+        font-size: clamp(0.7rem, 1.8vw, 0.9rem);
+    }
+
+    .review-rating {
+        color: #FF385C;
+        margin-bottom: 0.8rem;
+        font-size: clamp(0.9rem, 2.5vw, 1.1rem);
+    }
+
+    .review-text {
+        line-height: 1.6;
+        color: #484848;
+        font-size: clamp(0.8rem, 2vw, 1rem);
+        flex-grow: 1;
+    }
+
+    .review-form {
+        margin-top: 2.5rem;
+        padding: 2rem;
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        border: 1px solid #f0f0f0;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .review-form h3 {
+        margin-bottom: 1.5rem;
+        font-size: clamp(1.1rem, 2.8vw, 1.3rem);
+        font-weight: 700;
+        color: #222;
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+    }
+
+    .rating-container {
+        display: flex;
+        flex-direction: row-reverse;
+        justify-content: flex-end;
+        margin-bottom: 1.5rem;
+        width: 100%;
+    }
+
+    .rating-container input {
+        display: none;
+    }
+
+    .rating-container label {
+        cursor: pointer;
+        color: #ddd;
+        font-size: clamp(1.5rem, 4vw, 1.8rem);
+        margin: 0 2px;
+    }
+
+    .rating-container label:hover,
+    .rating-container label:hover ~ label,
+    .rating-container input:checked ~ label {
+        color: #FF385C;
+    }
+
+    .review-submit-btn {
+        background: #FF385C;
+        color: white;
+        border: none;
+        padding: 0.9rem 1.8rem;
+        border-radius: 8px;
+        font-weight: 700;
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        font-size: clamp(0.9rem, 2.5vw, 1rem);
+        margin-top: 1rem;
+    }
+
+    .review-submit-btn:hover {
+        background: #E31C5F;
+        transform: translateY(-2px);
+    }
+
+    .no-reviews {
+        text-align: center;
+        padding: 2rem;
+        background: #f9f9f9;
+        border-radius: 12px;
+        color: #717171;
+        font-size: clamp(0.9rem, 2.5vw, 1.1rem);
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .map-section {
+        margin-top: 3rem;
+        padding-top: 2rem;
+        border-top: 1px solid #ddd;
+        width: 100%;
+    }
+
+    .map-section h2 {
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+        font-weight: 700;
+        font-size: clamp(1.2rem, 3vw, 1.5rem);
+    }
+
+    .map-container {
+        height: 400px;
+        width: 100%;
+        border-radius: 8px;
+        overflow: hidden;
+        margin-bottom: 2rem;
+        position: relative;
+        z-index: 1;
+        background-color: #f0f0f0;
+    }
+
+    .mapboxgl-map {
+        width: 100%;
+        height: 100%;
+    }
+
+    .mapboxgl-canvas {
+        width: 100% !important;
+        height: 100% !important;
+    }
+
+    .mapboxgl-marker {
+        cursor: pointer;
+    }
+
+    .mapboxgl-ctrl-top-right {
+        top: 10px;
+        right: 10px;
+    }
+
+    .host-section {
+        margin: 2rem 0;
+        padding: 2rem 0;
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .host-section h2 {
+        font-size: clamp(1.2rem, 3vw, 1.5rem);
+        font-weight: 700;
+        margin-bottom: 1rem;
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+    }
+
+    .host-info {
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        width: 100%;
+    }
+
+    .host-avatar {
+        width: clamp(50px, 10vw, 64px);
+        height: clamp(50px, 10vw, 64px);
+        border-radius: 50%;
+        overflow: hidden;
+        background: #f0f0f0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+
+    .host-details {
+        flex: 1;
+        min-width: 200px;
+    }
+
+    .host-details p {
+        margin-bottom: 0.5rem;
+        color: #484848;
+        font-size: clamp(0.8rem, 2vw, 1rem);
+        line-height: 1.5;
+    }
+
+    .host-booking-message {
+        background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        border: 1px solid #dee2e6;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        width: 100%;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+
+    .host-booking-message:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    .host-booking-message i {
+        font-size: 1.5rem;
+        color: #FF385C;
+    }
+
+    .host-booking-message p {
+        margin: 0;
+        color: #484848;
+        line-height: 1.5;
+        font-size: clamp(0.8rem, 2vw, 1rem);
+    }
+
+    .login-message {
+        background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        border: 1px solid #dee2e6;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        width: 100%;
+        box-sizing: border-box;
+        text-align: center;
+    }
+
+    .login-message:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    .login-message p {
+        margin: 0;
+        color: #484848;
+        line-height: 1.5;
+        font-size: clamp(0.8rem, 2vw, 1rem);
+    }
+
+    .login-message a {
+        color: #FF385C;
+        font-weight: 600;
+        text-decoration: none;
+        transition: color 0.3s ease;
+    }
+
+    .login-message a:hover {
+        color: #E31C5F;
+        text-decoration: underline;
+    }
+
+    .host-review-message {
+        margin-top: 2rem;
+        background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        border: 1px solid #dee2e6;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .host-review-message:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    .host-review-message .message-content {
+        display: flex;
+        align-items: flex-start;
+        gap: 1rem;
+        width: 100%;
+    }
+
+    .host-review-message i {
+        font-size: 1.5rem;
+        color: #FF385C;
+        margin-top: 0.2rem;
+        flex-shrink: 0;
+    }
+
+    .host-review-message .message-text {
+        flex: 1;
+    }
+
+    .host-review-message h4 {
+        font-size: clamp(0.9rem, 2.5vw, 1.1rem);
+        font-weight: 700;
+        margin: 0 0 0.5rem 0;
+        color: #222;
+        font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;
+    }
+
+    .host-review-message p {
+        margin: 0;
+        color: #484848;
+        line-height: 1.5;
+        font-size: clamp(0.8rem, 2vw, 0.95rem);
+    }
+
+    .delete-review-form {
+        margin-top: 1rem;
+        display: flex;
+        justify-content: flex-end;
+        width: 100%;
+    }
+
+    .delete-review-btn {
+        background: none;
+        border: none;
+        color: #FF385C;
+        cursor: pointer;
+        font-size: clamp(0.7rem, 1.8vw, 0.9rem);
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 1rem;
+        border-radius: 6px;
+        transition: all 0.2s ease;
+        font-weight: 500;
+        font-family: 'Roboto', 'Lato', 'Montserrat', sans-serif;
+    }
+
+    .delete-review-btn:hover {
+        background-color: rgba(255, 56, 92, 0.1);
+        transform: translateY(-2px);
+    }
+
+    .delete-review-btn:active {
+        transform: translateY(0);
+    }
+
+    .delete-review-btn i {
+        font-size: clamp(0.8rem, 2vw, 1rem);
+        transition: transform 0.2s ease;
+    }
+
+    .delete-review-btn:hover i {
+        transform: scale(1.1);
+    }
+
+    @media (max-width: 1024px) {
+        .listing-content {
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+        }
+
+        .listing-details {
+            padding-right: 0;
+        }
+
+        .booking-card {
+            position: static;
+            margin-top: 1.5rem;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .listing-container {
+            padding: 1rem;
+        }
+
+        .listing-title-container {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .listing-actions {
+            width: 100%;
+            flex-direction: column;
+        }
+
+        .edit-listing-btn,
+        .delete-listing-btn {
+            width: 100%;
+            justify-content: center;
+        }
+
+        .listing-images {
+            grid-template-columns: 1fr;
+        }
+
+        .main-image {
+            height: clamp(120px, 40vw, 140px);
+        }
+
+        .sub-image {
+            height: clamp(60px, 20vw, 70px);
+        }
+
+        .reviews-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .reviews-header {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .booking-form {
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+        
+        .book-button {
+            margin-top: 1rem;
+        }
+
+        .host-info {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .host-avatar {
+            margin-bottom: 1rem;
+        }
+    }
+
+    @media (max-width: 480px) {
+        .listing-meta {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+
+        .amenities-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .review-header {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .main-image {
+            height: clamp(100px, 35vw, 120px);
+        }
+
+        .review-form {
+            padding: 1.5rem;
+        }
+
+        .host-booking-message,
+        .host-review-message,
+        .login-message {
+            padding: 1.2rem;
+        }
+    }
+
+    @media (max-width: 360px) {
+        .listing-container {
+            padding: 0.8rem;
+        }
+
+        .main-image {
+            height: clamp(80px, 30vw, 100px);
+        }
+
+        .sub-image {
+            height: clamp(50px, 15vw, 60px);
+        }
+
+        .booking-card,
+        .review-form,
+        .host-booking-message,
+        .host-review-message,
+        .login-message {
+            padding: 1rem;
+        }
+    }
+
+    /* Flash Message Styles */
+    .flash-message {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 15px 25px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #FF385C, #E31C5F);
+        color: white;
+        font-weight: 600;
+        box-shadow: 0 4px 15px rgba(255, 56, 92, 0.3);
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        transform: translateX(150%);
+        transition: transform 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        max-width: 350px;
+    }
+    
+    .flash-message.show {
+        transform: translateX(0);
+    }
+    
+    .flash-message i {
+        font-size: 1.2rem;
+    }
+    
+    .flash-message .close-btn {
+        margin-left: auto;
+        background: none;
+        border: none;
+        color: white;
+        cursor: pointer;
+        font-size: 1rem;
+        opacity: 0.8;
+        transition: opacity 0.2s;
+    }
+    
+    .flash-message .close-btn:hover {
+        opacity: 1;
+    }
+    
+    .flash-message.delete {
+        background: linear-gradient(135deg, #dc3545, #c82333);
+        box-shadow: 0 4px 15px rgba(220, 53, 69, 0.3);
+    }
+    
+    .flash-message.success {
+        background: linear-gradient(135deg, #28a745, #218838);
+        box-shadow: 0 4px 15px rgba(40, 167, 69, 0.3);
+    }
+    
+    .flash-message.warning {
+        background: linear-gradient(135deg, #ffc107, #d39e00);
+        box-shadow: 0 4px 15px rgba(255, 193, 7, 0.3);
+    }
+    
+    .flash-message.info {
+        background: linear-gradient(135deg, #17a2b8, #138496);
+        box-shadow: 0 4px 15px rgba(23, 162, 184, 0.3);
+    }
+    
+    /* Animation for flash message */
+    @keyframes slideIn {
+        0% { transform: translateX(150%); }
+        100% { transform: translateX(0); }
+    }
+    
+    @keyframes slideOut {
+        0% { transform: translateX(0); }
+        100% { transform: translateX(150%); }
+    }
+    
+    @keyframes pulse {
+        0% { transform: scale(1); }
+        50% { transform: scale(1.05); }
+        100% { transform: scale(1); }
+    }
+    
+    .flash-message.show {
+        animation: slideIn 0.5s forwards, pulse 1s ease-in-out 0.5s;
+    }
+    
+    .flash-message.hide {
+        animation: slideOut 0.5s forwards;
+    }
+</style>
+
+<div class="listing-container">
+    <div class="listing-header">
+        <div class="listing-title-container">
+        <h1 class="listing-title"><%= listing.title %></h1>
+            <% if (currUser && currUser._id.toString() === listing.owner._id.toString()) { %>
+                <div class="listing-actions">
+                    <!-- Edit Button -->
+                    <a href="/listings/<%= listing._id %>/edit" class="edit-listing-btn">
+                        <i class="fas fa-edit"></i> Edit Listing
+                    </a>
+
+                    <!-- Delete Button -->
+                    <form action="/listings/<%= listing._id %>?_method=DELETE" method="POST" class="delete-listing-form">
+                        <button type="submit" class="delete-listing-btn">
+                            <i class="fas fa-trash-alt"></i> Delete Listing
+                        </button>
+                    </form>
+                </div>
+            <% } %>
+        </div>
+        <div class="listing-meta">
+            <div class="listing-rating">
+                <span class="rating-stars">
+                    <i class="fas fa-star"></i>
+                </span>
+                <span class="rating-count">
+                    <%= listing.rating %> (<%= listing.reviews.length %> reviews)
+                </span>
+            </div>
+            <div class="listing-location">
+                <i class="fas fa-map-marker-alt"></i>
+                <%= listing.location %>, <%= listing.country %>
+            </div>
+        </div>
+    </div>
+
+    <div class="listing-images">
+        <div class="image-grid">
+            <% if (listing.image && listing.image.url) { %>
+                <div class="main-image">
+                    <img src="<%= listing.image.url %>" alt="<%= listing.title %>">
+                </div>
+            <% } else if (listing.images && listing.images.length > 0) { %>
+                <% listing.images.forEach((image, index) => { %>
+                    <% if (index === 0) { %>
+                        <div class="main-image">
+                            <img src="<%= image.url || image %>" alt="<%= listing.title %>">
+                        </div>
+                    <% } else if (index < 5) { %>
+                        <div class="sub-image">
+                            <img src="<%= image.url || image %>" alt="<%= listing.title %>">
+                            <% if (index === 4 && listing.images.length > 5) { %>
+                                <div class="overlay">
+                                    +<%= listing.images.length - 5 %> more
+                                </div>
+                            <% } %>
+                        </div>
+                    <% } %>
+                <% }); %>
+            <% } else { %>
+                <div class="main-image">
+                    <img src="/logo3.png" alt="Default listing image">
+                </div>
+            <% } %>
+        </div>
+    </div>
+
+    <div class="listing-content">
+        <div class="listing-details">
+            <div class="listing-description">
+                <h2>About this place</h2>
+                <p><%= listing.description %></p>
+            </div>
+
+            <div class="host-section" style="margin: 2rem 0; padding: 2rem 0; border-top: 1px solid #ddd; border-bottom: 1px solid #ddd;">
+                <h2 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 1rem; font-family: 'Montserrat', 'Roboto', 'Lato', sans-serif;">
+                    Hosted by <%= listing.owner.username %>
+                </h2>
+                <div class="host-info" style="display: flex; align-items: center; gap: 1.5rem;">
+                    <div class="host-avatar" style="width: 64px; height: 64px; border-radius: 50%; overflow: hidden; background: #f0f0f0; display: flex; align-items: center; justify-content: center;">
+                        <% if (listing.owner.profileImage && listing.owner.profileImage.url) { %>
+                            <img src="<%= listing.owner.profileImage.url %>" alt="Host" style="width: 100%; height: 100%; object-fit: cover;">
+                        <% } else { %>
+                            <i class="fas fa-user" style="font-size: 1.5rem; color: #717171;"></i>
+                        <% } %>
+                    </div>
+                    <div class="host-details">
+                        <p style="margin-bottom: 0.5rem; color: #484848;">
+                            <i class="fas fa-calendar-alt" style="margin-right: 0.5rem; color: #FF385C;"></i>
+                            Joined in <%= new Date(listing.owner.createdAt).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) %>
+                        </p>
+                        <% if (listing.owner.bio) { %>
+                            <p style="margin-bottom: 0.5rem; color: #484848;">
+                                <i class="fas fa-info-circle" style="margin-right: 0.5rem; color: #FF385C;"></i>
+                                <%= listing.owner.bio %>
+                            </p>
+                        <% } %>
+                        <% if (listing.owner.location) { %>
+                            <p style="color: #484848;">
+                                <i class="fas fa-map-marker-alt" style="margin-right: 0.5rem; color: #FF385C;"></i>
+                                <%= listing.owner.location %>
+                            </p>
+                        <% } %>
+                    </div>
+                </div>
+            </div>
+
+            <div class="amenities">
+                <h3>What this place offers</h3>
+                <div class="amenities-grid">
+                    <div class="amenity-item">
+                        <i class="fas fa-wifi amenity-icon"></i>
+                        <span>Free WiFi</span>
+                    </div>
+                    <div class="amenity-item">
+                        <i class="fas fa-parking amenity-icon"></i>
+                        <span>Free parking</span>
+                    </div>
+                    <div class="amenity-item">
+                        <i class="fas fa-swimming-pool amenity-icon"></i>
+                        <span>Pool</span>
+                    </div>
+                    <div class="amenity-item">
+                        <i class="fas fa-hot-tub amenity-icon"></i>
+                        <span>Hot tub</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="booking-card">
+                <div class="booking-header">
+                    <div class="price">
+                        ₹<%= listing.price.toLocaleString("en-IN") %>
+                        <span class="price-night">night</span>
+                    </div>
+                </div>
+
+                <% if (currUser) { %>
+                    <% if (currUser._id.equals(listing.owner._id)) { %>
+                        <div class="host-booking-message">
+                            <i class="fas fa-info-circle"></i>
+                            <p>You cannot book your own property.</p>
+                        </div>
+                    <% } else { %>
+                    <form id="booking-form" class="booking-form">
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                        <input type="hidden" name="listingId" value="<%= listing._id %>">
+                        <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+                                <div class="form-group">
+                                    <label for="checkIn">Check-in Date</label>
+                                    <input type="date" id="checkIn" name="checkIn" class="form-control" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="checkOut">Check-out Date</label>
+                                    <input type="date" id="checkOut" name="checkOut" class="form-control" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="guests">Number of Guests</label>
+                                    <input type="number" id="guests" name="guests" class="form-control" min="1" max="<%= listing.maxGuests %>" required>
+                                </div>
+                            </div>
+                            <div style="display: flex; flex-direction: column; align-items: center; gap: 1rem;">
+                                <button type="submit" class="btn btn-primary book-button" id="pay-now" style="width: 200px;">
+                                    <i class="fas fa-calendar-check"></i> Book Now
+                                </button>
+                                <div class="price-details" style="display: none; width: 100%; max-width: 300px;">
+                                    <div class="price-item total" style="display: flex; justify-content: space-between; font-weight: 600; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #ddd;">
+                                        <span>Total Amount:</span>
+                                        <span id="total-amount">₹0</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                    <% } %>
+                <% } else { %>
+                    <div class="login-message">
+                        <p>Please <a href="/login">login</a> to book this property.</p>
+                    </div>
+                <% } %>
+
+                <% if (currUser && currUser._id.equals(listing.owner._id)) { %>
+                    <div class="host-controls mt-3">
+                        <h4>Host Controls</h4>
+                        <% if (listing.bookedDates && listing.bookedDates.length > 0) { %>
+                            <div class="booked-dates mb-3">
+                                <h5>Booked Dates:</h5>
+                                <ul class="list-group">
+                                    <% listing.bookedDates.forEach(booking => { %>
+                                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                                            <%= new Date(booking.checkIn).toLocaleDateString() %> - 
+                                            <%= new Date(booking.checkOut).toLocaleDateString() %>
+                                            <form action="/bookings/<%= booking._id %>?_method=DELETE" method="POST" class="d-inline">
+                                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                                <button type="submit" class="btn-cancel" onclick="return confirm('Are you sure you want to cancel this booking?')">
+                                                    <i class="fas fa-times"></i> Cancel Booking
+                                                </button>
+                                            </form>
+                                        </li>
+                                    <% }) %>
+                                </ul>
+                            </div>
+                        <% } else { %>
+                            <p>No current bookings</p>
+                        <% } %>
+                    </div>
+                <% } %>
+            </div>
+
+            <div class="reviews-section">
+                <div class="reviews-header">
+                    <h2>Reviews</h2>
+                    <% if (listing.reviews && listing.reviews.length > 0) { %>
+                        <div class="listing-rating">
+                            <span class="rating-stars">
+                                <i class="fas fa-star"></i>
+                            </span>
+                            <span class="rating-count">
+                                <%= listing.rating %> (<%= listing.reviews.length %> reviews)
+                            </span>
+                        </div>
+                    <% } %>
+                </div>
+
+                <% if (listing.reviews && listing.reviews.length > 0) { %>
+                    <div class="reviews-grid">
+                        <% listing.reviews.forEach(review => { %>
+                            <div class="review-card">
+                                <div class="review-header">
+                                    <span class="review-author"><%= review.author.username %></span>
+                                    <span class="review-date"><%= new Date(review.createdAt).toLocaleDateString() %></span>
+                                </div>
+                                <div class="review-rating">
+                                    <% for(let i = 0; i < review.rating; i++) { %>
+                                        <i class="fas fa-star"></i>
+                                    <% } %>
+                                </div>
+                                <p class="review-text"><%= review.comment %></p>
+                                <% if (currUser && currUser._id.equals(review.author._id)) { %>
+                                    <form action="/listings/<%= listing._id %>/reviews/<%= review._id %>?_method=DELETE" method="POST" class="delete-review-form">
+                                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                        <button type="submit" class="delete-review-btn">
+                                            <i class="fas fa-trash-alt"></i>
+                                            <span>Delete review</span>
+                                        </button>
+                                    </form>
+                                <% } %>
+                            </div>
+                        <% }) %>
+                    </div>
+                <% } else { %>
+                    <div class="no-reviews">
+                        <i class="fas fa-comment-alt" style="font-size: 2rem; margin-bottom: 1rem; color: #ddd;"></i>
+                        <p>No reviews yet</p>
+                    </div>
+                <% } %>
+
+                <% if(currUser && !currUser._id.equals(listing.owner._id)) { %>
+                    <div class="review-form">
+                        <h3>Write a Review</h3>
+                        <form action="/listings/<%= listing._id %>/reviews" method="post">
+                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                            <div class="mb-3 rating d-flex flex-column align-items-center">
+                                <label for="rating" class="form-label" style="font-weight: 600; margin-bottom: 0.8rem;">Your Rating</label>
+                                <div class="rating-container">
+                                    <input type="radio" id="rate5" name="review[rating]" value="5" required/>
+                                    <label for="rate5"><i class="fas fa-star"></i></label>
+                                    <input type="radio" id="rate4" name="review[rating]" value="4" required/>
+                                    <label for="rate4"><i class="fas fa-star"></i></label>
+                                    <input type="radio" id="rate3" name="review[rating]" value="3" required/>
+                                    <label for="rate3"><i class="fas fa-star"></i></label>
+                                    <input type="radio" id="rate2" name="review[rating]" value="2" required/>
+                                    <label for="rate2"><i class="fas fa-star"></i></label>
+                                    <input type="radio" id="rate1" name="review[rating]" value="1" required/>
+                                    <label for="rate1"><i class="fas fa-star"></i></label>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="comment" class="form-label" style="font-weight: 600;">Your Review</label>
+                                <textarea name="review[comment]" id="comment" rows="4" class="form-control" required placeholder="Share your experience with this place..."></textarea>
+                            </div>
+                            <button type="submit" class="review-submit-btn">Submit Review</button>
+                        </form>
+                    </div>
+                <% } else if (currUser && currUser._id.equals(listing.owner._id)) { %>
+                    <div class="host-review-message">
+                        <div class="message-content">
+                            <i class="fas fa-info-circle"></i>
+                            <div class="message-text">
+                                <h4>Host Review Policy</h4>
+                                <p>As the host of this listing, you cannot add reviews to your own property.</p>
+                            </div>
+                        </div>
+                    </div>
+                <% } %>
+            </div>
+
+            <div class="map-section">
+                <h2>Location</h2>
+                <div id="map" class="map-container"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Flash Message Container -->
+<div id="flash-container"></div>
+
+<script src="/js/map.js"></script>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+<% let userEmail = (typeof currUser !== 'undefined' && currUser && currUser.email) ? currUser.email : ""; %>
+
+<script>
+    // Flash Message Function
+    function showFlashMessage(message, type = 'info', duration = 3000) {
+        const flashContainer = document.getElementById('flash-container');
+        
+        // Check if there's already a flash message being displayed
+        const existingFlash = document.querySelector('.flash-message.show');
+        if (existingFlash) {
+            // If there's an existing flash message, hide it first
+            hideFlashMessage(existingFlash);
+            // Wait for the animation to complete before showing the new message
+            setTimeout(() => {
+                createFlashMessage(message, type, duration);
+            }, 500);
+        } else {
+            // If no existing flash message, create a new one immediately
+            createFlashMessage(message, type, duration);
+        }
+    }
+    
+    function createFlashMessage(message, type, duration) {
+        const flashContainer = document.getElementById('flash-container');
+        
+        // Create flash message element
+        const flashMessage = document.createElement('div');
+        flashMessage.className = `flash-message ${type}`;
+        
+        // Set icon based on type
+        let icon = 'info-circle';
+        if (type === 'delete') icon = 'trash-alt';
+        if (type === 'success') icon = 'check-circle';
+        if (type === 'warning') icon = 'exclamation-triangle';
+        
+        // Set content
+        flashMessage.innerHTML = `
+            <i class="fas fa-${icon}"></i>
+            <span>${message}</span>
+            <button class="close-btn"><i class="fas fa-times"></i></button>
+        `;
+        
+        // Add to container
+        flashContainer.appendChild(flashMessage);
+        
+        // Show with animation
+        setTimeout(() => {
+            flashMessage.classList.add('show');
+        }, 10);
+        
+        // Add close button functionality
+        const closeBtn = flashMessage.querySelector('.close-btn');
+        closeBtn.addEventListener('click', () => {
+            hideFlashMessage(flashMessage);
+        });
+        
+        // Auto hide after duration
+        if (duration > 0) {
+            setTimeout(() => {
+                hideFlashMessage(flashMessage);
+            }, duration);
+        }
+        
+        return flashMessage;
+    }
+    
+    function hideFlashMessage(flashMessage) {
+        flashMessage.classList.remove('show');
+        flashMessage.classList.add('hide');
+        
+        // Remove from DOM after animation
+        setTimeout(() => {
+            if (flashMessage.parentNode) {
+                flashMessage.parentNode.removeChild(flashMessage);
+            }
+        }, 500);
+    }
+    
+    document.addEventListener('DOMContentLoaded', function() {
+        const bookingForm = document.getElementById('booking-form');
+        const payNowBtn = document.getElementById('pay-now');
+        const startDateInput = document.getElementById('checkIn');
+        const endDateInput = document.getElementById('checkOut');
+        const guestsInput = document.getElementById('guests');
+        const basePrice = Number('<%= listing.price %>');
+
+        function calculateTotalPrice(nights) {
+            const total = basePrice * nights;
+            
+            // Update the displayed price details
+            document.getElementById('total-amount').textContent = `₹${total.toLocaleString('en-IN')}`;
+            document.querySelector('.price-details').style.display = 'block';
+            
+            return total;
+        }
+
+        function calculateNights(checkIn, checkOut) {
+            const start = new Date(checkIn);
+            const end = new Date(checkOut);
+            const diffTime = Math.abs(end - start);
+            return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        }
+
+        async function initializePayment() {
+            const checkIn = startDateInput.value;
+            const checkOut = endDateInput.value;
+            const guests = Number(guestsInput.value);
+            const nights = calculateNights(checkIn, checkOut);
+            const totalPrice = calculateTotalPrice(nights);
+
+            // Generate unique booking ID
+            const timestamp = Date.now();
+            const randomString = Math.random().toString(36).substring(2, 8);
+            const bookingId = `DART-${timestamp}-${randomString}`;
+
+            try {
+                // Create Razorpay order first
+                const response = await fetch('/payment/create_order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': '<%= csrfToken %>'
+                    },
+                    body: JSON.stringify({
+                        listingId: '<%= listing._id %>',
+                        checkIn: checkIn,
+                        checkOut: checkOut,
+                        guests: guests,
+                        totalPrice: totalPrice
+                    })
+                });
+
+                const orderData = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(orderData.error || 'Failed to create order');
+                }
+
+                const options = {
+                    key: '<%= process.env.RAZORPAY_KEY_ID %>',
+                    amount: orderData.amount,
+                    currency: 'INR',
+                    name: '<%= listing.title %>',
+                    description: `Booking for ${nights} nights`,
+                    image: '<%= listing.images[0].url %>',
+                    order_id: orderData.id,
+                    handler: function(response) {
+                        console.log('Razorpay response:', response);
+                        
+                        if (!response.razorpay_payment_id || !response.razorpay_order_id || !response.razorpay_signature) {
+                            showFlashMessage('Payment verification failed. Please try again.', 'error');
+                            payNowBtn.disabled = false;
+                            payNowBtn.textContent = 'Book Now';
+                            return;
+                        }
+
+                        // Create URL parameters
+                        const params = new URLSearchParams({
+                            listingId: '<%= listing._id %>',
+                            checkIn: checkIn,
+                            checkOut: checkOut,
+                            guests: guests,
+                            paymentId: response.razorpay_payment_id,
+                            orderId: orderData.id, // Use the order ID from the order creation response
+                            signature: response.razorpay_signature,
+                            amount: totalPrice,
+                            paymentMode: 'razorpay',
+                            author: '<%= currUser._id %>',
+                            bookingId: bookingId,
+                            email: '<%= currUser ? currUser.email : "" %>',
+                            name: '<%= currUser ? currUser.username : "" %>',
+                            status: 'confirmed'
+                        });
+
+                        // Log the parameters for debugging
+                        console.log('Payment success URL parameters:', {
+                            listingId: '<%= listing._id %>',
+                            checkIn: checkIn,
+                            checkOut: checkOut,
+                            guests: guests,
+                            paymentId: response.razorpay_payment_id,
+                            orderId: orderData.id, // Use the order ID from the order creation response
+                            signature: response.razorpay_signature,
+                            amount: totalPrice,
+                            paymentMode: 'razorpay',
+                            author: '<%= currUser._id %>',
+                            bookingId: bookingId,
+                            email: '<%= currUser ? currUser.email : "" %>',
+                            name: '<%= currUser ? currUser.username : "" %>',
+                            status: 'confirmed'
+                        });
+
+                        window.location.href = `/payment/paymentSuccess?${params.toString()}`;
+                    },
+                    prefill: {
+                        name: '<%= currUser ? currUser.username : "" %>',
+                        email: '<%= currUser ? currUser.email : "" %>'
+                    },
+                    theme: {
+                        color: '#F37254'
+                    },
+                    modal: {
+                        ondismiss: function() {
+                            payNowBtn.disabled = false;
+                            payNowBtn.textContent = 'Book Now';
+                        }
+                    }
+                };
+
+                const rzp = new Razorpay(options);
+                rzp.open();
+            } catch (error) {
+                console.error('Payment initialization error:', error);
+                showFlashMessage(error.message || 'Failed to initialize payment', 'error');
+                payNowBtn.disabled = false;
+                payNowBtn.textContent = 'Book Now';
+            }
+        }
+
+        bookingForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            if (!startDateInput.value || !endDateInput.value || !guestsInput.value) {
+                flash('error', 'Please fill in all booking details');
+                return;
+            }
+            payNowBtn.disabled = true;
+            payNowBtn.textContent = 'Processing...';
+            initializePayment();
+        });
+
+        // Add event listeners to delete buttons
+        const deleteListingBtn = document.querySelector('.delete-listing-btn');
+        if (deleteListingBtn) {
+            deleteListingBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                
+                if (confirm('Are you sure you want to delete this listing? This action cannot be undone.')) {
+                    this.closest('form').submit();
+                }
+            });
+        }
+
+        const deleteReviewBtns = document.querySelectorAll('.delete-review-btn');
+        deleteReviewBtns.forEach(btn => {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                
+                if (confirm('Are you sure you want to delete your review?')) {
+                    this.closest('form').submit();
+                }
+            });
+        });
+
+        // Get booked dates for the calendar
+        const bookedDates = JSON.parse('<%- JSON.stringify(listing.bookedDates) %>');
+        
+        function isDateAvailable(date) {
+            const checkDate = new Date(date);
+            return !bookedDates.some(booking => {
+                const checkIn = new Date(booking.checkIn);
+                const checkOut = new Date(booking.checkOut);
+                return checkDate >= checkIn && checkDate <= checkOut;
+            });
+        }
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            const startDateInput = document.getElementById('checkIn');
+            const endDateInput = document.getElementById('checkOut');
+            
+            if (startDateInput && endDateInput) {
+                const today = new Date().toISOString().split('T')[0];
+                startDateInput.setAttribute('min', today);
+                
+                // Add date validation
+                startDateInput.addEventListener('change', function() {
+                    const selectedDate = new Date(this.value);
+                    endDateInput.setAttribute('min', this.value);
+                    
+                    // Check if selected date is available
+                    if (!isDateAvailable(this.value)) {
+                        showFlashMessage('Selected check-in date is not available', 'warning');
+                        this.value = '';
+                        return;
+                    }
+                    
+                    // Set max date (14 days from check-in)
+                    const maxDate = new Date(selectedDate);
+                    maxDate.setDate(maxDate.getDate() + 14);
+                    endDateInput.setAttribute('max', maxDate.toISOString().split('T')[0]);
+                    
+                    // If check-out date is already selected and not available, clear it
+                    if (endDateInput.value && !isDateAvailable(endDateInput.value)) {
+                        endDateInput.value = '';
+                        showFlashMessage('Please select a different check-out date', 'warning');
+                    }
+                });
+                
+                endDateInput.addEventListener('change', function() {
+                    if (!isDateAvailable(this.value)) {
+                        showFlashMessage('Selected check-out date is not available', 'warning');
+                        this.value = '';
+                        return;
+                    }
+                    
+                    // Check if any dates between check-in and check-out are booked
+                    const startDate = new Date(startDateInput.value);
+                    const endDate = new Date(this.value);
+                    let allDatesAvailable = true;
+                    
+                    for (let date = new Date(startDate); date <= endDate; date.setDate(date.getDate() + 1)) {
+                        if (!isDateAvailable(date.toISOString().split('T')[0])) {
+                            allDatesAvailable = false;
+                            break;
+                        }
+                    }
+                    
+                    if (!allDatesAvailable) {
+                        showFlashMessage('Some dates in your selected range are not available', 'warning');
+                        this.value = '';
+                    }
+                });
+            }
+        });
+
+        // Add click functionality to show all images in a modal
+        document.querySelectorAll('.sub-image').forEach(img => {
+            img.addEventListener('click', function() {
+                const mainImage = document.querySelector('.main-image img');
+                const clickedImage = this.querySelector('img');
+                const temp = mainImage.src;
+                mainImage.src = clickedImage.src;
+                clickedImage.src = temp;
+            });
+        });
+    });
+
+    document.addEventListener('DOMContentLoaded', async function() {
+        // Initialize map
+        const mapContainer = document.getElementById('map');
+        if (!mapContainer) {
+            console.error('Map container not found');
+            return;
+        }
+
+        try {
+            const coordinates = JSON.parse('<%- JSON.stringify(listing.geometry.coordinates) %>');
+            const mapToken = "<%= process.env.MAP_TOKEN %>";
+            
+            if (!mapToken) {
+                throw new Error('Mapbox access token is missing');
+            }
+
+            if (!coordinates || !Array.isArray(coordinates) || coordinates.length !== 2) {
+                throw new Error('Invalid coordinates');
+            }
+
+            mapboxgl.accessToken = mapToken;
+            
+            const map = new mapboxgl.Map({
+                container: 'map',
+                style: 'mapbox://styles/mapbox/streets-v12',
+                center: coordinates,
+                zoom: 12,
+                attributionControl: false,
+                interactive: true
+            });
+
+            // Wait for map to load
+            map.on('load', () => {
+                console.log('Map loaded successfully');
+                // Add navigation controls
+                map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
+                // Add marker
+                new mapboxgl.Marker({
+                    color: '#FF385C',
+                    scale: 1.2
+                })
+                .setLngLat(coordinates)
+                .addTo(map);
+
+                // Force a resize to ensure the map renders properly
+                map.resize();
+            });
+
+            // Handle any errors
+            map.on('error', (e) => {
+                console.error('Map error:', e);
+                showFlashMessage('Error loading map. Please try refreshing the page.', 'warning');
+            });
+        } catch (error) {
+            console.error('Error initializing map:', error);
+            showFlashMessage('Error initializing map: ' + error.message, 'warning');
+            if (mapContainer) {
+                mapContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Unable to load map</div>';
+            }
+        }
+    });
+
+    document.addEventListener('DOMContentLoaded', function() {
+        try {
+            const coordinates = JSON.parse('<%- JSON.stringify(listing.geometry.coordinates) %>');
+            const mapToken = "<%= process.env.MAP_TOKEN %>";
+            initializeMap(coordinates, mapToken);
+        } catch (error) {
+            console.error('Error setting up map:', error);
+            showMapError('Error setting up map');
+        }
+    });
+</script>

@@ -1,0 +1,23 @@
+<%
+    // Convert arrays to Sets to remove duplicates
+    const uniqueSuccess = (typeof success !== 'undefined' && success) ? [...new Set(success)] : [];    
+    const uniqueError = (typeof error !== 'undefined' && error) ? [...new Set(error)] : [];
+%>
+
+<% if (uniqueSuccess.length > 0) { %>
+    <% uniqueSuccess.forEach(function(message) { %>
+        <div class="alert alert-success alert-dismissible fade show" role="alert">
+            <%= message %>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+    <% }); %>
+<% } %>
+
+<% if (uniqueError.length > 0) { %>
+    <% uniqueError.forEach(function(message) { %>
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <%= message %>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+    <% }); %>
+<% } %>

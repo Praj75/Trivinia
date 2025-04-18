@@ -1,0 +1,199 @@
+<% layout('./layouts/boilerplate') %>
+
+<div class="container mt-5">
+    <% if (error) { %>
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <%= error %>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+    <% } %>
+
+    <div class="row g-4">
+        <!-- My Bookings Section -->
+        <div class="col-lg-8">
+            <div class="card shadow-sm">
+                <div class="card-header bg-white py-3">
+                    <h4 class="mb-0 text-primary">My Bookings</h4>
+                </div>
+                <div class="card-body">
+                    <% if (bookings && bookings.length > 0) { %>
+                        <div class="row g-4">
+                            <% bookings.forEach(booking => { %>
+                                <div class="col-12">
+                                    <div class="card h-100 border-0 shadow-sm hover-shadow">
+                                        <div class="row g-0">
+                                            <div class="col-md-4 position-relative">
+                                                <% if (booking.listing && booking.listing.images && booking.listing.images.length > 0) { %>
+                                                    <img src="<%= booking.listing.images[0].url %>" 
+                                                         class="img-fluid h-100 w-100" 
+                                                         alt="<%= booking.listing.title %>"
+                                                         style="object-fit: cover; min-height: 300px;">
+                                                <% } else { %>
+                                                    <img src="/images/default-property.jpg" 
+                                                         class="img-fluid h-100 w-100" 
+                                                         alt="Default Property"
+                                                         style="object-fit: cover; min-height: 300px;">
+                                                <% } %>
+                                                <div class="position-absolute top-0 end-0 m-2">
+                                                    <span class="badge rounded-pill bg-<%= booking.status === 'confirmed' ? 'success' : booking.status === 'cancelled' ? 'danger' : 'warning' %> px-3 py-2">
+                                                        <%= booking.status.charAt(0).toUpperCase() + booking.status.slice(1) %>
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-8">
+                                                <div class="card-body h-100 d-flex flex-column">
+                                                    <div class="mb-auto">
+                                                        <h4 class="card-title mb-3">
+                                                            <%= booking.listing ? booking.listing.title : 'Listing not found' %>
+                                                        </h4>
+                                                        <div class="mb-4">
+                                                            <div class="d-flex align-items-center mb-3">
+                                                                <i class="fas fa-calendar-check text-primary me-3 fa-fw"></i>
+                                                                <div>
+                                                                    <div class="text-muted small">Check-in</div>
+                                                                    <strong><%= new Date(booking.checkIn).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) %></strong>
+                                                                </div>
+                                                            </div>
+                                                            <div class="d-flex align-items-center mb-3">
+                                                                <i class="fas fa-calendar-times text-primary me-3 fa-fw"></i>
+                                                                <div>
+                                                                    <div class="text-muted small">Check-out</div>
+                                                                    <strong><%= new Date(booking.checkOut).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) %></strong>
+                                                                </div>
+                                                            </div>
+                                                            <div class="d-flex align-items-center mb-3">
+                                                                <i class="fas fa-user-friends text-primary me-3 fa-fw"></i>
+                                                                <div>
+                                                                    <div class="text-muted small">Guests</div>
+                                                                    <strong><%= booking.guests %> Guest<%= booking.guests !== 1 ? 's' : '' %></strong>
+                                                                </div>
+                                                            </div>
+                                                            <% if (booking.listing && booking.listing.location) { %>
+                                                                <div class="d-flex align-items-center">
+                                                                    <i class="fas fa-map-marker-alt text-primary me-3 fa-fw"></i>
+                                                                    <div>
+                                                                        <div class="text-muted small">Location</div>
+                                                                        <strong><%= booking.listing.location %></strong>
+                                                                    </div>
+                                                                </div>
+                                                            <% } %>
+                                                        </div>
+                                                    </div>
+                                                    <div class="d-flex justify-content-between align-items-center mt-3 pt-3 border-top">
+                                                        <a href="/bookings/<%= booking._id %>" class="btn btn-primary">
+                                                            <i class="fas fa-info-circle me-2"></i> View Details
+                                                        </a>
+                                                        <% if (booking.status === 'confirmed') { %>
+                                                            <form action="/bookings/<%= booking._id %>/free-dates" method="POST" class="d-inline">
+                                                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                                                <button type="submit" class="btn btn-outline-danger" 
+                                                                        onclick="return confirm('Are you sure you want to cancel this booking?')">
+                                                                    <i class="fas fa-times-circle me-2"></i> Cancel Booking
+                                                                </button>
+                                                            </form>
+                                                        <% } %>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            <% }); %>
+                        </div>
+                    <% } else { %>
+                        <div class="text-center py-5">
+                            <i class="fas fa-calendar-alt text-muted mb-3" style="font-size: 3rem;"></i>
+                            <h5 class="text-muted mb-3">No Bookings Yet</h5>
+                            <p class="text-muted mb-4">Start exploring amazing places to stay!</p>
+                            <a href="/listings" class="btn btn-primary">
+                                <i class="fas fa-search me-2"></i>Browse Listings
+                            </a>
+                        </div>
+                    <% } %>
+                </div>
+            </div>
+        </div>
+
+        <!-- My Listings Section -->
+        <div class="col-lg-4">
+            <div class="card shadow-sm">
+                <div class="card-header bg-white py-3">
+                    <h4 class="mb-0 text-primary">My Listings</h4>
+                </div>
+                <div class="card-body">
+                    <% if (listings && listings.length > 0) { %>
+                        <div class="list-group list-group-flush">
+                            <% listings.forEach(listing => { %>
+                                <div class="list-group-item px-0 py-3 border-0 border-bottom">
+                                    <div class="d-flex justify-content-between align-items-start mb-2">
+                                        <h6 class="mb-0 text-truncate me-3"><%= listing.title %></h6>
+                                        <span class="badge bg-primary rounded-pill">₹<%= listing.price %></span>
+                                    </div>
+                                    <p class="mb-2 small text-muted">
+                                        <i class="fas fa-map-marker-alt me-1"></i>
+                                        <%= listing.location %>
+                                    </p>
+                                    <a href="/listings/<%= listing._id %>" class="btn btn-outline-primary btn-sm">
+                                        <i class="fas fa-external-link-alt me-1"></i> View Listing
+                                    </a>
+                                </div>
+                            <% }); %>
+                        </div>
+                    <% } else { %>
+                        <div class="text-center py-5">
+                            <i class="fas fa-home text-muted mb-3" style="font-size: 3rem;"></i>
+                            <h5 class="text-muted mb-3">No Listings Yet</h5>
+                            <p class="text-muted mb-4">Start hosting your property today!</p>
+                            <a href="/listings/new" class="btn btn-primary">
+                                <i class="fas fa-plus me-2"></i>Add Listing
+                            </a>
+                        </div>
+                    <% } %>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.hover-shadow {
+    transition: box-shadow 0.3s ease, transform 0.2s ease;
+}
+.hover-shadow:hover {
+    box-shadow: 0 .5rem 1rem rgba(0,0,0,.15)!important;
+    transform: translateY(-2px);
+}
+.card {
+    border-radius: 0.75rem;
+    overflow: hidden;
+}
+.card-img-top {
+    border-top-left-radius: 0.75rem;
+    border-top-right-radius: 0.75rem;
+}
+.badge {
+    font-weight: 500;
+}
+.text-truncate {
+    max-width: 100%;
+}
+.fa-fw {
+    font-size: 1.2rem;
+}
+</style>
+
+<script>
+    function showFlashMessage(message, type = 'success') {
+        const flashContainer = document.createElement('div');
+        flashContainer.className = `alert alert-${type} alert-dismissible fade show position-fixed top-0 start-50 translate-middle-x mt-3`;
+        flashContainer.style.zIndex = '9999';
+        flashContainer.innerHTML = `
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        `;
+        document.body.appendChild(flashContainer);
+        setTimeout(() => {
+            flashContainer.remove();
+        }, 3000);
+    }
+</script> 

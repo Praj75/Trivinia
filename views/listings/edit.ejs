@@ -1,0 +1,120 @@
+<%- layout("/layouts/boilerplate")%>
+<div class="row mt-3">
+    <div class="col-8 offset-2">
+
+    <h1>Edit your Listing</h1>
+    <form method="post" action="/listings/<%= listing._id %>?_method=PUT" novalidate class="needs-validation" enctype="multipart/form-data">
+
+        <div class="mb-3">
+            <label for="title" class="form-label">Title</label>
+            <input name="listing[title]" value="<%= listing.title %>" type="text" class="form-control" required/>
+            <div class="valid-feedback">Dope Title</div>
+        </div>
+       
+        <div class="mb-3">
+            <label for="description" class="form-label" >Description</label>
+        <textarea name="listing[description]" class="form-control" required ><%= listing.description %></textarea>
+        <div class="invalid-feedback">Enter Description</div>
+    </div>
+    
+
+    <div class="mb-3">
+        <p>Current Listing Images</p>
+        <% if (listing.images && listing.images.length > 0) { %>
+            <div class="current-images">
+                <% listing.images.forEach((image, index) => { %>
+                    <div class="image-container">
+                        <img src="<%= image.url %>" alt="Listing Image" width="200">
+                        <button type="button" class="btn btn-danger btn-sm mt-2" data-image-index="<%= index %>" onclick="deleteImage(this)">Delete</button>
+                    </div>
+                <% }); %>
+            </div>
+            <input type="hidden" name="deleteImages" id="deleteImages" value="[]">
+        <% } else { %>
+            <p>No images uploaded yet.</p>
+        <% } %>
+    </div>
+    
+
+
+    <div class="mb-3">
+        <label for="image" class="form-label">Upload New Listing Image</label>
+        <input name="listing[image]" type="file" class="form-control" onchange="previewImage(this)"/>
+        <div id="imagePreview" class="mt-2"></div>
+    </div>
+
+    <div class="row">
+        <div class="mb-3 col-md-4">
+            <label for="price" class="form-label">Price</label>
+            <input name="listing[price]" value="<%= listing.price %>" type="number" min="1"  class="form-control" required/>
+            <div class="invalid-feedback">Price should be greater than 0</div>
+        </div>
+    
+        <div class="mb-3 col-md-8">
+            <label for="country" class="form-label">Country</label>
+            <input name="listing[country]" value="<%= listing.country %>" type="text"  class="form-control" required/>
+            <div class="invalid-feedback">Country should be valid</div>
+        </div>
+    </div>
+
+
+    <div class="mb-3">
+        <label for="location" class="form-label">Location</label>
+        <input name="listing[location]" value="<%= listing.location %>" type="text"  class="form-control" required/>
+        <div class="invalid-feedback">Location should be valid</div>
+    </div>
+
+
+
+
+    <button class="btn btn-primary btn-lg w-100 mt-3">
+        <i class="fas fa-save me-2"></i>Update Listing
+    </button>
+      <br> <br>
+      
+    </form>
+</div>
+</div>
+
+<script>
+    const deleteImages = new Set();
+    
+    function deleteImage(button) {
+        const index = button.getAttribute('data-image-index');
+        const imageContainer = button.closest('.image-container');
+        
+        if (deleteImages.has(index)) {
+            // Restore the image
+            deleteImages.delete(index);
+            imageContainer.style.opacity = '1';
+            button.textContent = 'Delete';
+        } else {
+            // Mark the image for deletion
+            deleteImages.add(index);
+            imageContainer.style.opacity = '0.5';
+            button.textContent = 'Restore';
+        }
+        
+        // Update the hidden input with the array of indices to delete
+        document.getElementById('deleteImages').value = JSON.stringify(Array.from(deleteImages));
+    }
+
+    function previewImage(input) {
+        const preview = document.getElementById('imagePreview');
+        preview.innerHTML = '';
+        
+        if (input.files && input.files[0]) {
+            const reader = new FileReader();
+            
+            reader.onload = function(e) {
+                const img = document.createElement('img');
+                img.src = e.target.result;
+                img.width = 200;
+                img.className = 'mt-2';
+                preview.appendChild(img);
+            }
+            
+            reader.readAsDataURL(input.files[0]);
+        }
+    }
+</script>

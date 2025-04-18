@@ -1,0 +1,275 @@
+<%- layout("/layouts/boilerplate") %>
+
+<style>
+    .booking-container {
+        max-width: 1000px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+    }
+
+    .booking-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+    }
+
+    .booking-status {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        border-radius: 50px;
+        font-size: 0.875rem;
+        font-weight: 500;
+    }
+
+    .status-confirmed {
+        background-color: #27ae60;
+        color: white;
+    }
+
+    .status-pending {
+        background-color: #f1c40f;
+        color: #2d3436;
+    }
+
+    .status-cancelled {
+        background-color: #e74c3c;
+        color: white;
+    }
+
+    .status-completed {
+        background-color: #2980b9;
+        color: white;
+    }
+
+    .booking-details {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+    }
+
+    .booking-grid {
+        display: grid;
+        grid-template-columns: 1fr 2fr;
+        gap: 2rem;
+    }
+
+    .listing-image-container {
+        width: 100%;
+        height: 300px;
+        overflow: hidden;
+        border-radius: 12px;
+    }
+
+    .listing-image {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .listing-info {
+        padding: 2rem;
+    }
+
+    .listing-title {
+        font-size: 1.75rem;
+        margin-bottom: 0.5rem;
+        color: #2d3436;
+    }
+
+    .listing-location {
+        color: #636e72;
+        margin-bottom: 2rem;
+    }
+
+    .info-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1.5rem;
+        margin-bottom: 2rem;
+    }
+
+    .info-item {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .info-label {
+        font-size: 0.875rem;
+        color: #636e72;
+        font-weight: 500;
+    }
+
+    .info-value {
+        font-size: 1rem;
+        color: #2d3436;
+    }
+
+    .booking-actions {
+        margin-top: 2rem;
+        display: flex;
+        gap: 1rem;
+    }
+
+    .btn-cancel {
+        background-color: #e74c3c;
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+
+    .btn-cancel:hover {
+        background-color: #c0392b;
+    }
+
+    @media (max-width: 768px) {
+        .booking-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .listing-image {
+            height: 200px;
+        }
+
+        .info-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+
+<div class="booking-container">
+    <div class="booking-header">
+        <h1>Booking Details</h1>
+        <span class="booking-status status-<%= booking.status.toLowerCase() %>">
+            <%= booking.status %>
+        </span>
+    </div>
+
+    <div class="booking-details">
+        <div class="booking-grid">
+            <div class="listing-image-container">
+                <% 
+                let imageUrl = '/logo3.png';
+                if (booking.listing) {
+                    if (booking.listing.image && booking.listing.image.url) {
+                        imageUrl = booking.listing.image.url;
+                    } else if (booking.listing.images && booking.listing.images.length > 0) {
+                        const firstImage = booking.listing.images[0];
+                        if (typeof firstImage === 'string') {
+                            imageUrl = firstImage;
+                        } else if (firstImage.url) {
+                            imageUrl = firstImage.url;
+                        }
+                    }
+                }
+                %>
+                <img src="<%= imageUrl %>" 
+                     alt="<%= booking.listing.title %>" 
+                     class="listing-image"
+                     onerror="this.onerror=null; this.src='/logo3.png';">
+            </div>
+            <div class="listing-info">
+                <h2 class="listing-title"><%= booking.listing.title %></h2>
+                <p class="listing-location">
+                    <i class="fas fa-map-marker-alt"></i>
+                    <%= booking.listing.location %>
+                </p>
+
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-label">Check-in Date</span>
+                        <span class="info-value">
+                            <i class="fas fa-calendar-check"></i>      
+                            <%= booking.checkIn.toLocaleDateString() %>
+                        </span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Check-out Date</span>
+                        <span class="info-value">
+                            <i class="fas fa-calendar-times"></i>      
+                            <%= booking.checkOut.toLocaleDateString() %>
+                        </span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Duration</span>
+                        <span class="info-value">
+                            <i class="fas fa-clock"></i>
+                            <%= Math.ceil((booking.checkOut - booking.checkIn) / (1000 * 60 * 60 * 24)) %> nights
+                        </span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Total Amount</span>
+                        <span class="info-value">
+                            <i class="fas fa-rupee-sign"></i>
+                            <%= (booking.totalAmount/100).toLocaleString("en-IN") %>
+                        </span>
+                    </div>
+                </div>
+
+                <div class="booking-actions">
+                    <% if (booking.status === 'confirmed') { %>
+                        <form action="/bookings/<%= booking._id %>?_method=DELETE" method="POST" class="d-inline">
+                            <button type="submit" class="btn-cancel" onclick="return confirm('Are you sure you want to cancel this booking?')">
+                                <i class="fas fa-times"></i> Cancel Booking
+                            </button>
+                        </form>
+                    <% } %>
+                    <a href="/bookings" class="btn btn-primary">
+                        <i class="fas fa-arrow-left"></i> Back to Bookings
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function showFlashMessage(message, type = 'success') {
+        const flashContainer = document.createElement('div');
+        flashContainer.className = `alert alert-${type} alert-dismissible fade show position-fixed top-0 start-50 translate-middle-x mt-3`;
+        flashContainer.style.zIndex = '9999';
+        flashContainer.innerHTML = `
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        `;
+        
+        document.body.appendChild(flashContainer);
+        
+        // Auto dismiss after 3 seconds
+        setTimeout(() => {
+            flashContainer.remove();
+        }, 3000);
+    }
+
+    function cancelBooking(bookingId) {
+        if (confirm('Are you sure you want to cancel this booking? This action cannot be undone.')) {
+            fetch(`/api/cancel-booking`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ bookingId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showFlashMessage('Booking cancelled successfully', 'success');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1500);
+                } else {
+                    showFlashMessage(data.error || 'Failed to cancel booking', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showFlashMessage('An error occurred while cancelling the booking', 'error');
+            });
+        }
+    }
+</script> 
